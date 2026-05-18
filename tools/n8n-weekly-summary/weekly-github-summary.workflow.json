@@ -1,0 +1,304 @@
+{
+  "name": "Weekly GitHub Dev Summary (Claude AI)",
+  "nodes": [
+    {
+      "id": "cron-trigger",
+      "name": "Weekly Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [250, 300],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 17 * * 5"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "github-commits",
+      "name": "Get GitHub Commits",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [450, 100],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://api.github.com/repos/' + $Workflow.GitHubRepo + '/commits?per_page=20&since=' + $Workflow.LastFriday }}",
+        "options": {
+          "headers": {
+            "Accept": "application/vnd.github.v3+json",
+            "User-Agent": "weekly-summary-workflow"
+          },
+          "auth": {
+            "credentialType": "httpHeaderAuth",
+            "name": "Authorization"
+          }
+        },
+        "sendHeaders": true,
+        "sendBody": false
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "{{ $Workflow.GitHubTokenName }}",
+          "name": "GitHub Token"
+        }
+      }
+    },
+    {
+      "id": "github-issues",
+      "name": "Get Closed Issues",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [450, 300],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://api.github.com/repos/' + $Workflow.GitHubRepo + '/issues?state=closed&per_page=20&since=' + $Workflow.LastFriday + '&filter=all' }}",
+        "options": {
+          "headers": {
+            "Accept": "application/vnd.github.v3+json",
+            "User-Agent": "weekly-summary-workflow"
+          },
+          "auth": {
+            "credentialType": "httpHeaderAuth",
+            "name": "Authorization"
+          }
+        },
+        "sendHeaders": true
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "{{ $Workflow.GitHubTokenName }}",
+          "name": "GitHub Token"
+        }
+      }
+    },
+    {
+      "id": "github-prs",
+      "name": "Get Merged PRs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [450, 500],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://api.github.com/repos/' + $Workflow.GitHubRepo + '/pulls?state=closed&per_page=20&sort=updated&direction=desc' }}",
+        "options": {
+          "headers": {
+            "Accept": "application/vnd.github.v3+json",
+            "User-Agent": "weekly-summary-workflow"
+          },
+          "auth": {
+            "credentialType": "httpHeaderAuth",
+            "name": "Authorization"
+          }
+        },
+        "sendHeaders": true
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "{{ $Workflow.GitHubTokenName }}",
+          "name": "GitHub Token"
+        }
+      }
+    },
+    {
+      "id": "aggregate",
+      "name": "Aggregate Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 300],
+      "parameters": {
+        "language": "javaScript",
+        "code": "// Aggregate GitHub data for Claude prompt\nconst commits = $input.all()[0].json;\nconst issues = $input.all()[1].json;\nconst prs = $input.all()[2].json;\n\nconst repoName = $Workflow.GitHubRepo;\nconst language = $Workflow.Language;\n\n// Filter this week's merged PRs\nconst thisWeekPRs = prs.filter(p => p.merged_at && new Date(p.merged_at) > new Date(Date.now() - 7 * 24 * 60 * 60 * 1000));\nconst thisWeekIssues = issues.filter(i => i.closed_at && new Date(i.closed_at) > new Date(Date.now() - 7 * 24 * 60 * 60 * 1000));\n\n// Format commit messages\nconst commitMessages = commits.map(c => '- ' + c.commit.message.split('\\n')[0]).join('\\n');\n\nconst issueList = thisWeekIssues.map(i => '- #' + i.number + ' ' + i.title).join('\\n');\nconst prList = thisWeekPRs.map(p => '- #' + p.number + ' ' + p.title + (p.merged_at ? ' (merged)' : '')).join('\\n');\n\n// Build prompt\nlet prompt;\nif (language === 'FR') {\n  prompt = 'Vous êtes un assistant qui rédige un résumé hebdomadaire de l\\'activité d\\'un dépôt GitHub.\\n\\n';\n  prompt += 'Dépôt : ' + repoName + '\\n\\n';\n  prompt += '## Commits\\n' + (commitMessages || 'Aucun commit cette semaine.') + '\\n\\n';\n  prompt += '## Issues fermées\\n' + (issueList || 'Aucune issue fermée cette semaine.') + '\\n\\n';\n  prompt += '## PR fusionnées\\n' + (prList || 'Aucune PR fusionnée cette semaine.') + '\\n\\n';\n  prompt += 'Rédigez un résumé narratif en français (3-5 paragraphes) mettant en évidence les changements importants, les nouvelles fonctionnalités, les corrections de bugs et les tendances générales.';\n} else {\n  prompt = 'You are an assistant writing a weekly narrative summary of a GitHub repository\\'s activity.\\n\\n';\n  prompt += 'Repository: ' + repoName + '\\n\\n';\n  prompt += '## Commits\\n' + (commitMessages || 'No commits this week.') + '\\n\\n';\n  prompt += '## Closed Issues\\n' + (issueList || 'No issues closed this week.') + '\\n\\n';\n  prompt += '## Merged PRs\\n' + (prList || 'No PRs merged this week.') + '\\n\\n';\n  prompt += 'Write a narrative summary in English (3-5 paragraphs) highlighting important changes, new features, bug fixes, and general trends. Use a professional but engaging tone.';\n}\n\nreturn { prompt, repoName, commitCount: commits.length, issueCount: thisWeekIssues.length, prCount: thisWeekPRs.length, language };"
+      }
+    },
+    {
+      "id": "claude-api",
+      "name": "Claude API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [950, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "claude-sonnet-4-20250514"
+            },
+            {
+              "name": "max_tokens",
+              "value": 2048
+            },
+            {
+              "name": "messages",
+              "value": "[{\"role\": \"user\", \"content\": \"{{ $json.prompt }}\"}]"
+            }
+          ]
+        },
+        "options": {
+          "headers": {
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json"
+          },
+          "auth": {
+            "credentialType": "httpHeaderAuth",
+            "name": "x-api-key"
+          }
+        },
+        "sendHeaders": true
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "{{ $Workflow.ClaudeTokenName }}",
+          "name": "Claude API Key"
+        }
+      }
+    },
+    {
+      "id": "parse-response",
+      "name": "Parse Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1150, 300],
+      "parameters": {
+        "language": "javaScript",
+        "code": "// Extract the summary text from Claude's response\nconst response = $input.first().json;\nconst summary = response.content && response.content[0] && response.content[0].text ? response.content[0].text : 'Could not generate summary.';\nconst repoName = $json.repoName;\nconst weekEnding = new Date().toISOString().split('T')[0];\n\nreturn {\n  summary,\n  repoName,\n  weekEnding,\n  formattedMessage: '📊 **Weekly Dev Summary — ' + repoName + '**\\n\\n' + summary + '\\n\\n---\\n_Generated on ' + weekEnding + '_'\n};"
+      }
+    },
+    {
+      "id": "delivery",
+      "name": "Send to Webhook",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1400, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $Workflow.WebhookURL }}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "content",
+              "value": "={{ $json.formattedMessage }}"
+            }
+          ]
+        },
+        "options": {
+          "headers": {
+            "Content-Type": "application/json"
+          }
+        },
+        "sendHeaders": true
+      }
+    }
+  ],
+  "connections": {
+    "cron-trigger": {
+      "main": [
+        [
+          {
+            "node": "github-commits",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "github-issues",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "github-prs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "github-commits": {
+      "main": [
+        [
+          {
+            "node": "aggregate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "github-issues": {
+      "main": [
+        [
+          {
+            "node": "aggregate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "github-prs": {
+      "main": [
+        [
+          {
+            "node": "aggregate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "aggregate": {
+      "main": [
+        [
+          {
+            "node": "claude-api",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "claude-api": {
+      "main": [
+        [
+          {
+            "node": "parse-response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "parse-response": {
+      "main": [
+        [
+          {
+            "node": "delivery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "weekly-summary"
+    },
+    {
+      "name": "github"
+    },
+    {
+      "name": "claude"
+    }
+  ]
+}
